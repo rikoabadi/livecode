@@ -6079,7 +6079,50 @@ static void __MCStringShrinkAt(MCStringRef self, uindex_t p_at, uindex_t p_count
 	// Now adjust the length of the string.
 	self -> char_count -= p_count;
 
-	// TODO: Shrink the buffer if its too big.
+	// Shrink the buffer when the live data occupies less than a quarter of the
+	// allocated capacity, to avoid holding on to large amounts of unused memory
+	// after repeated deletions.  Only bother when the saving is at least one
+	// allocation block (64 chars).
+	// capacity stores the number of chars excluding the implicit NUL, so the
+	// total allocation is (capacity + 1) chars (or * sizeof(strchar_t) bytes
+	// for the Unicode path).
+	if (self -> capacity > 0 && self -> char_count * 4 < self -> capacity)
+	{
+		// Guard against overflow in the rounding arithmetic.  char_count just
+		// decreased and was already a valid allocated size, so this check is
+		// only a safety net for the theoretical extreme case.
+		if (self -> char_count <= UINDEX_MAX - 64)
+		{
+			// New allocation rounded up to a 64-char boundary (includes NUL slot).
+			uindex_t t_new_capacity;
+			t_new_capacity = (self -> char_count + 1 + 63) & ~63;
+			if (t_new_capacity <= self -> capacity)
+			{
+				if (__MCStringIsNative(self))
+				{
+					char_t *t_new_chars;
+					if (MCMemoryReallocate(self -> native_chars, t_new_capacity, t_new_chars))
+					{
+						self -> native_chars = t_new_chars;
+						self -> capacity = t_new_capacity - 1;
+					}
+				}
+				else
+				{
+					// Guard against overflow when converting char count to bytes.
+					if (t_new_capacity <= UINDEX_MAX / sizeof(strchar_t))
+					{
+						strchar_t *t_new_chars;
+						if (MCMemoryReallocate(self -> chars, t_new_capacity * sizeof(strchar_t), t_new_chars))
+						{
+							self -> chars = t_new_chars;
+							self -> capacity = t_new_capacity - 1;
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 static bool

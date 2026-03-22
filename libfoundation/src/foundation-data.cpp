@@ -891,7 +891,34 @@ static void __MCDataShrinkAt(MCDataRef r_data, uindex_t p_at, uindex_t p_count)
 	// Now adjust the length of the string.
 	r_data->byte_count -= p_count;
     
-	// TODO: Shrink the buffer if its too big.
+	// Shrink the buffer when the live data occupies less than a quarter of the
+	// allocated capacity, to avoid holding on to large amounts of unused memory
+	// after repeated deletions.  Only bother when the saving is at least one
+	// allocation block (64 bytes).
+	if (r_data->capacity > 0 && r_data->byte_count * 4 < r_data->capacity)
+	{
+		// Guard against the theoretical overflow in the rounding arithmetic.
+		// In practice byte_count is always far below UINDEX_MAX here (it just
+		// decreased and was already a valid allocated size), but be explicit.
+		if (r_data->byte_count <= UINDEX_MAX - 63)
+		{
+			uindex_t t_new_capacity;
+			t_new_capacity = (r_data->byte_count + 63) & ~63;
+			// t_new_capacity == 0 only when byte_count == 0; keep at least one
+			// allocation block so that bytes remains a valid (non-null) pointer.
+			if (t_new_capacity == 0)
+				t_new_capacity = 64;
+			if (t_new_capacity < r_data->capacity)
+			{
+				byte_t *t_new_bytes;
+				if (MCMemoryReallocate(r_data->bytes, t_new_capacity, t_new_bytes))
+				{
+					r_data->bytes = t_new_bytes;
+					r_data->capacity = t_new_capacity;
+				}
+			}
+		}
+	}
 }
 
 static bool __MCDataExpandAt(MCDataRef r_data, uindex_t p_at, uindex_t p_count)

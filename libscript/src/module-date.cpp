@@ -95,11 +95,13 @@ MCDateGetTimeInfo(bool t_is_local,
 
 	if (t_is_local)
 	{
-		/* FIXME This may be expensive, but is probably required if
-		 * MCDateGetTimeInfo() is to behave properly over summer time
-		 * changes. */
-		tzset();
-		r_timezone = timezone;
+		/* Use tm_gmtoff from localtime_r(), which already reflects the
+		 * current UTC offset including any DST adjustment.  This avoids
+		 * the overhead of a separate tzset() call and the use of the
+		 * global 'timezone' variable, which only stores the standard
+		 * (non-DST) offset and therefore gives an incorrect result
+		 * during summer time. */
+		r_timezone = r_timeinfo.tm_gmtoff;
 	}
 	else
 	{

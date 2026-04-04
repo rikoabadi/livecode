@@ -348,9 +348,11 @@ def guess_java_home(platform):
             javac_str = '/bin/javac'
             javac_path = subprocess.check_output(['/usr/bin/env',
                          'readlink', '-f', '/usr' + javac_str]).strip()
+            if isinstance(javac_path, bytes):
+                javac_path = javac_path.decode('utf-8')
             if (os.path.isfile(javac_path) and
                 javac_path.endswith(javac_str)):
-                return javac_path[:-len(javac_str)]
+                return str(javac_path[:-len(javac_str)])
         except subprocess.CalledProcessError as e:
             print(e)
             pass # Fall through to other ways of guessing
@@ -546,7 +548,7 @@ def guess_android_triple(target_arch):
     if target_arch == 'armv6':
         return 'arm-linux-androideabi'
     elif target_arch == 'armv7':
-        return 'armv7-linux-androideabi'
+        return 'armv7a-linux-androideabi'
     elif target_arch == 'arm64':
         return 'aarch64-linux-android'
     elif target_arch == 'x86':
@@ -602,7 +604,7 @@ def android_extra_ldflags(target_arch):
 
 def validate_android_tools(opts):
     if opts['ANDROID_NDK_VERSION'] is None:
-        opts['ANDROID_NDK_VERSION'] = 'r15'
+        opts['ANDROID_NDK_VERSION'] = '25'
 
     ndk_ver = opts['ANDROID_NDK_VERSION']
 
@@ -615,10 +617,10 @@ def validate_android_tools(opts):
         opts['ANDROID_NDK'] = ndk
 
     if opts['ANDROID_NDK_PLATFORM_VERSION'] is None:
-        opts['ANDROID_NDK_PLATFORM_VERSION'] = '16'
+        opts['ANDROID_NDK_PLATFORM_VERSION'] = '33'
 
     if opts['ANDROID_API_VERSION'] is None:
-        opts['ANDROID_API_VERSION'] = '29'
+        opts['ANDROID_API_VERSION'] = '35'
      
     api_ver = opts['ANDROID_API_VERSION']
 
@@ -638,31 +640,40 @@ def validate_android_tools(opts):
         opts['ANDROID_BUILD_TOOLS'] = tools
 
     if opts['ANDROID_TOOLCHAIN'] is None:
-        dir = guess_android_tooldir(toolchain_dir, guess_standalone_toolchain_dir_name(opts['TARGET_ARCH']))
-        if dir is None:
-            error('Android toolchain not found for architecture {}; set $ANDROID_TOOLCHAIN'.format(opts['TARGET_ARCH']))
-        prefix = guess_compiler_prefix(opts['TARGET_ARCH'])
-        opts['ANDROID_TOOLCHAIN'] = os.path.join(dir,'bin',prefix)
+        if not ndk_ver.startswith('r'):
+            opts['ANDROID_TOOLCHAIN'] = os.path.join(opts['ANDROID_NDK'], 'toolchains/llvm/prebuilt/linux-x86_64/bin') + '/'
+        else:
+            dir = guess_android_tooldir(toolchain_dir, guess_standalone_toolchain_dir_name(opts['TARGET_ARCH']))
+            if dir is None:
+                error('Android toolchain not found for architecture {}; set $ANDROID_TOOLCHAIN'.format(opts['TARGET_ARCH']))
+            prefix = guess_compiler_prefix(opts['TARGET_ARCH'])
+            opts['ANDROID_TOOLCHAIN'] = os.path.join(dir,'bin',prefix)
 
     def android_tool(name, env, extra=""):
         if opts[env] is None:
-            tool = opts['ANDROID_TOOLCHAIN'] + name
+            if opts['ANDROID_TOOLCHAIN'].endswith('/'):
+                tool = opts['ANDROID_TOOLCHAIN'] + name
+            else:
+                tool = opts['ANDROID_TOOLCHAIN'] + '-' + name
             if extra is not None:
                 tool += ' ' + extra
             opts[env] = tool
 
     target_arch = opts['TARGET_ARCH']
+    ndk_platform_ver = opts['ANDROID_NDK_PLATFORM_VERSION']
     march = guess_android_march(target_arch)
     triple = guess_android_triple(target_arch)
     cflags = android_extra_cflags(target_arch)
     ldflags = android_extra_ldflags(target_arch)
 
     if opts['ANDROID_LIB_PATH'] is None:
-        dir =guess_standalone_toolchain_dir_name(opts['TARGET_ARCH'])
-        if dir is None:
-            error('Android standalone toolchain not found for architecture {}'.format(opts['TARGET_ARCH']))
-        
-        opts['ANDROID_LIB_PATH'] = os.path.join(dir,triple,'lib')
+        if not ndk_ver.startswith('r'):
+            opts['ANDROID_LIB_PATH'] = os.path.join(opts['ANDROID_NDK'], 'toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib', guess_android_triple(target_arch), ndk_platform_ver)
+        else:
+            dir =guess_standalone_toolchain_dir_name(opts['TARGET_ARCH'])
+            if dir is None:
+                error('Android standalone toolchain not found for architecture {}'.format(opts['TARGET_ARCH']))
+            opts['ANDROID_LIB_PATH'] = os.path.join(dir,triple,'lib')
 
     # All Android builds use Clang and make a lot of noise about unused
     # arguments (e.g. linker-specific arguments). Suppress them.
@@ -670,16 +681,30 @@ def validate_android_tools(opts):
 
     if march != '':
         march = '-march=' + march
-    android_tool('ar', 'AR')
-    android_tool('clang', 'CC',
-                 '-target {} {} -integrated-as {}'.format(triple,march,cflags))
-    android_tool('clang++', 'CXX',
-                 '-target {} {} -integrated-as {}'.format(triple,march,cflags))
-    android_tool('clang++', 'LINK',
-                 '-target {} {} -integrated-as -fuse-ld=bfd {}'.format(triple,march,ldflags))
-    android_tool('objcopy', 'OBJCOPY')
-    android_tool('objdump', 'OBJDUMP')
-    android_tool('strip', 'STRIP')
+
+    if not ndk_ver.startswith('r'):
+        clang_triple = guess_android_triple(target_arch) + ndk_platform_ver
+        android_tool('llvm-ar', 'AR', "")
+        android_tool(clang_triple + '-clang', 'CC',
+                     '{} {}'.format(march,cflags))
+        android_tool(clang_triple + '-clang++', 'CXX',
+                     '{} {}'.format(march,cflags))
+        android_tool(clang_triple + '-clang++', 'LINK',
+                     '{} -fuse-ld=lld {}'.format(march,ldflags))
+        android_tool('llvm-objcopy', 'OBJCOPY', "")
+        android_tool('llvm-objdump', 'OBJDUMP', "")
+        android_tool('llvm-strip', 'STRIP', "")
+    else:
+        android_tool('ar', 'AR')
+        android_tool('clang', 'CC',
+                     '-target {} {} -integrated-as {}'.format(triple,march,cflags))
+        android_tool('clang++', 'CXX',
+                     '-target {} {} -integrated-as {}'.format(triple,march,cflags))
+        android_tool('clang++', 'LINK',
+                     '-target {} {} -integrated-as -fuse-ld=bfd {}'.format(triple,march,ldflags))
+        android_tool('objcopy', 'OBJCOPY')
+        android_tool('objdump', 'OBJDUMP')
+        android_tool('strip', 'STRIP')
 
 ################################################################
 # Emscripten-specific options
